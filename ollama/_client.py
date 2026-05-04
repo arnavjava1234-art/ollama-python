@@ -6,7 +6,6 @@ import platform
 import sys
 import urllib.parse
 from hashlib import sha256
-import threading
 from os import PathLike
 from pathlib import Path
 from typing import (
@@ -96,11 +95,6 @@ class BaseClient(contextlib.AbstractContextManager, contextlib.AbstractAsyncCont
     `kwargs` are passed to the httpx client.
     """
 
-    self._HARDCODED_KEYS = ['key1', 'key2', 'key3', 'key4', 'key5']
-    self._key_index = 0
-    self._key_lock = threading.Lock()
-    self._has_custom_auth = headers and headers.get('authorization') is not None
-
     headers = {
       k.lower(): v
       for k, v in {
@@ -111,8 +105,9 @@ class BaseClient(contextlib.AbstractContextManager, contextlib.AbstractAsyncCont
       }.items()
       if v is not None
     }
-    if not headers.get('authorization'):
-      headers['authorization'] = f'Bearer {self._HARDCODED_KEYS[self._key_index]}'
+    api_key = os.getenv('OLLAMA_API_KEY', None)
+    if not headers.get('authorization') and api_key:
+      headers['authorization'] = f'Bearer {api_key}'
 
     self._client = client(
       base_url=_parse_host(host or os.getenv('OLLAMA_HOST')),
@@ -121,13 +116,6 @@ class BaseClient(contextlib.AbstractContextManager, contextlib.AbstractAsyncCont
       headers=headers,
       **kwargs,
     )
-
-  def _next_key(self):
-    if self._has_custom_auth:
-        return
-    with self._key_lock:
-        self._key_index = (self._key_index + 1) % len(self._HARDCODED_KEYS)
-        self._client.headers['authorization'] = f'Bearer {self._HARDCODED_KEYS[self._key_index]}'
 
   def __exit__(self, exc_type, exc_val, exc_tb):
     self.close()
@@ -147,18 +135,14 @@ class Client(BaseClient):
     self._client.close()
 
   def _request_raw(self, *args, **kwargs):
-    for attempt in range(len(self._HARDCODED_KEYS)):
-      try:
-        r = self._client.request(*args, **kwargs)
-        r.raise_for_status()
-        return r
-      except httpx.HTTPStatusError as e:
-        if e.response.status_code in [429, 401, 403] and attempt < len(self._HARDCODED_KEYS) - 1:
-          self._next_key()
-          continue
-        raise ResponseError(e.response.text, e.response.status_code) from None
-      except httpx.ConnectError:
-        raise ConnectionError(CONNECTION_ERROR_MESSAGE) from None
+    try:
+      r = self._client.request(*args, **kwargs)
+      r.raise_for_status()
+      return r
+    except httpx.HTTPStatusError as e:
+      raise ResponseError(e.response.text, e.response.status_code) from None
+    except httpx.ConnectError:
+      raise ConnectionError(CONNECTION_ERROR_MESSAGE) from None
 
   @overload
   def _request(
@@ -197,23 +181,18 @@ class Client(BaseClient):
     if stream:
 
       def inner():
-        for attempt in range(len(self._HARDCODED_KEYS)):
-          with self._client.stream(*args, **kwargs) as r:
-            try:
-              r.raise_for_status()
-            except httpx.HTTPStatusError as e:
-              e.response.read()
-              if e.response.status_code in [429, 401, 403] and attempt < len(self._HARDCODED_KEYS) - 1:
-                self._next_key()
-                continue
-              raise ResponseError(e.response.text, e.response.status_code) from None
+        with self._client.stream(*args, **kwargs) as r:
+          try:
+            r.raise_for_status()
+          except httpx.HTTPStatusError as e:
+            e.response.read()
+            raise ResponseError(e.response.text, e.response.status_code) from None
 
-            for line in r.iter_lines():
-              part = json.loads(line)
-              if err := part.get('error'):
-                raise ResponseError(err)
-              yield cls(**part)
-            break
+          for line in r.iter_lines():
+            part = json.loads(line)
+            if err := part.get('error'):
+              raise ResponseError(err)
+            yield cls(**part)
 
       return inner()
 
@@ -702,7 +681,12 @@ class Client(BaseClient):
 
     Returns:
       WebSearchResponse with the search results
+    Raises:
+      ValueError: If OLLAMA_API_KEY environment variable is not set
     """
+    if not self._client.headers.get('authorization', '').startswith('Bearer '):
+      raise ValueError('Authorization header with Bearer token is required for web search')
+
     return self._request(
       WebSearchResponse,
       'POST',
@@ -723,6 +707,9 @@ class Client(BaseClient):
     Returns:
       WebFetchResponse with the fetched result
     """
+    if not self._client.headers.get('authorization', '').startswith('Bearer '):
+      raise ValueError('Authorization header with Bearer token is required for web fetch')
+
     return self._request(
       WebFetchResponse,
       'POST',
@@ -741,18 +728,14 @@ class AsyncClient(BaseClient):
     await self._client.aclose()
 
   async def _request_raw(self, *args, **kwargs):
-    for attempt in range(len(self._HARDCODED_KEYS)):
-      try:
-        r = await self._client.request(*args, **kwargs)
-        r.raise_for_status()
-        return r
-      except httpx.HTTPStatusError as e:
-        if e.response.status_code in [429, 401, 403] and attempt < len(self._HARDCODED_KEYS) - 1:
-          self._next_key()
-          continue
-        raise ResponseError(e.response.text, e.response.status_code) from None
-      except httpx.ConnectError:
-        raise ConnectionError(CONNECTION_ERROR_MESSAGE) from None
+    try:
+      r = await self._client.request(*args, **kwargs)
+      r.raise_for_status()
+      return r
+    except httpx.HTTPStatusError as e:
+      raise ResponseError(e.response.text, e.response.status_code) from None
+    except httpx.ConnectError:
+      raise ConnectionError(CONNECTION_ERROR_MESSAGE) from None
 
   @overload
   async def _request(
@@ -791,23 +774,18 @@ class AsyncClient(BaseClient):
     if stream:
 
       async def inner():
-        for attempt in range(len(self._HARDCODED_KEYS)):
-          async with self._client.stream(*args, **kwargs) as r:
-            try:
-              r.raise_for_status()
-            except httpx.HTTPStatusError as e:
-              await e.response.aread()
-              if e.response.status_code in [429, 401, 403] and attempt < len(self._HARDCODED_KEYS) - 1:
-                self._next_key()
-                continue
-              raise ResponseError(e.response.text, e.response.status_code) from None
+        async with self._client.stream(*args, **kwargs) as r:
+          try:
+            r.raise_for_status()
+          except httpx.HTTPStatusError as e:
+            await e.response.aread()
+            raise ResponseError(e.response.text, e.response.status_code) from None
 
-            async for line in r.aiter_lines():
-              part = json.loads(line)
-              if err := part.get('error'):
-                raise ResponseError(err)
-              yield cls(**part)
-            break
+          async for line in r.aiter_lines():
+            part = json.loads(line)
+            if err := part.get('error'):
+              raise ResponseError(err)
+            yield cls(**part)
 
       return inner()
 

@@ -264,3 +264,17 @@ except ollama.ResponseError as e:
   if e.status_code == 404:
     ollama.pull(model)
 ```
+
+
+## Local Proxy Server and Key Rotation
+You can now pass multiple API keys to cycle through automatically in case of rate limits using `OLLAMA_API_KEYS`:
+
+```bash
+export OLLAMA_API_KEYS="d984cfcf0d734b61974e77580ee74a64.25nr9BW7SyUgUo2fNg2b59Xc, 1f1796cc30dd48c49079717710d0b349.6s-gvB9r7-geccEAh4ecJ7zS, f444ad1fc0e542a09c6b36f0c18ec08a.k4T_wd7LFk-5rl-R53gLMDsF, 70877d43b4a8472393caacc339bda30e.8AyGntG7K_bVlQAYsvKOpn2L, 58ccc1ff9d4549aa92070b5a6a5d6755.RP6UZ7CBbgd6Pejz0KBBjy2p"
+```
+
+To start a local proxy server that forwards requests and rotates keys, install `fastapi` and `uvicorn`, then run:
+```python
+import ollama
+ollama.serve()
+```

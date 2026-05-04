@@ -1,4 +1,12 @@
 from ollama._client import AsyncClient, Client
+
+try:
+    from ollama._server import serve
+except ImportError:
+    # Handle if fastapi/uvicorn are not installed yet
+    def serve(*args, **kwargs):
+        raise ImportError("To use the server, install fastapi and uvicorn: pip install fastapi uvicorn")
+
 from ollama._types import (
   ChatResponse,
   EmbeddingsResponse,
@@ -21,6 +29,7 @@ from ollama._types import (
 
 __all__ = [
   'AsyncClient',
+  'serve',
   'ChatResponse',
   'Client',
   'EmbedResponse',
